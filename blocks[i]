@@ -1,4 +1,4 @@
-// Initialisiert eine Gruppeninformationsstruktur mit einer Atomaren Variable usage auf den Wert 2
+// Initialisiert eine Gruppeninformationsstruktur mit einer Variable usage auf den Wert 2
 struct group_info init_groups = {.usage = ATOMIC_INIT(2)};
 
 // Funktion zur Allozierung von Speicher für Gruppeninformationen
