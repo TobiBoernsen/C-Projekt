@@ -1,0 +1,98 @@
+// Initialisiert eine Gruppeninformationsstruktur mit einer Atomaren Variable usage auf den Wert 2
+struct group_info init_groups = {.usage = ATOMIC_INIT(2)};
+
+// Funktion zur Allozierung von Speicher für Gruppeninformationen
+struct group_info *groups_alloc(int gidsetsize) {
+    struct group_info *group_info;
+    int nblocks;
+    int i;
+
+    // Berechnet die Anzahl der Blöcke, die benötigt werden
+    nblocks = (gidsetsize + NGROUPS_PER_BLOCK - 1) / NGROUPS_PER_BLOCK;
+
+    // Stellen Sie sicher, dass wir immer mindestens einen indirekten Blockzeiger haben
+    nblocks = nblocks ? : 1;
+
+    // Alloziert Speicher für Gruppeninformationen
+    group_info = kmalloc(sizeof(*group_info) + nblocks * sizeof(gid_t *), GFP_USER);
+
+    if (!group_info)
+        return NULL;
+
+    // Setzt verschiedene Eigenschaften der Gruppeninformationen
+    group_info->ngroups = gidsetsize;
+    group_info->nblocks = nblocks;
+    atomic_set(&group_info->usage, 1);
+
+    // Je nach Größe der Gruppeninformationen werden ein kleiner Block oder mehrere Blöcke allokiert
+    if (gidsetsize <= NGROUPS_SMALL)
+        group_info->blocks[0] = group_info->small_block;
+    else {
+        for (i = 0; i < nblocks; i++) {
+            gid_t *b;
+            b = (void *)__get_free_page(GFP_USER);
+            if (!b)
+                goto out_undo_partial_alloc;
+            group_info->blocks[i] = b;
+        }
+    }
+
+    return group_info;
+
+out_undo_partial_alloc:
+    // Freigabe von Speicher im Fehlerfall
+    while (--i >= 0) {
+        free_page((unsigned long)group_info->blocks[i]);
+    }
+
+    kfree(group_info);
+    return NULL;
+}
+
+// Funktion zur Freigabe von Speicher für Gruppeninformationen
+void groups_free(struct group_info *group_info) {
+    if (group_info->blocks[0] != group_info->small_block) {
+        int i;
+        for (i = 0; i < group_info->nblocks; i++)
+            free_page((unsigned long)group_info->blocks[i]);
+    }
+    kfree(group_info);
+}
+
+// Funktion zur Exportierung von Gruppeninformationen in ein User-Space-Array
+static int groups_to_user(gid_t __user *grouplist, const struct group_info *group_info) {
+    int i;
+    unsigned int count = group_info->ngroups;
+
+    for (i = 0; i < group_info->nblocks; i++) {
+        unsigned int cp_count = min(NGROUPS_PER_BLOCK, count);
+        unsigned int len = cp_count * sizeof(*grouplist);
+
+        if (copy_to_user(grouplist, group_info->blocks[i], len))
+            return -EFAULT;
+
+        grouplist += NGROUPS_PER_BLOCK;
+        count -= cp_count;
+    }
+
+    return 0;
+}
+
+// Funktion zum Füllen von Gruppeninformationen aus einem User-Space-Array
+static int groups_from_user(struct group_info *group_info, gid_t __user *grouplist) {
+    int i;
+    unsigned int count = group_info->ngroups;
+
+    for (i = 0; i < group_info->nblocks; i++) {
+        unsigned int cp_count = min(NGROUPS_PER_BLOCK, count);
+        unsigned int len = cp_count * sizeof(*grouplist);
+
+        if (copy_from_user(group_info->blocks[i], grouplist, len))
+            return -EFAULT;
+
+        grouplist += NGROUPS_PER_BLOCK;
+        count -= cp_count;
+    }
+
+    return 0;
+}
